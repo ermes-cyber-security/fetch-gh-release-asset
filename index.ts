@@ -1,13 +1,15 @@
-/* eslint-disable no-void */
-import { dirname } from 'path';
-import { mkdir, writeFile } from 'fs/promises';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import retry from 'async-retry';
 import type { Context } from '@actions/github/lib/context';
+import { EndpointOptions, RequestParameters } from '@octokit/types';
+import retry from 'async-retry';
+import {
+  mkdir,
+  writeFile
+} from 'fs/promises';
 import type { HeadersInit } from 'node-fetch';
 import fetch from 'node-fetch';
-
+import { dirname } from 'path';
 interface GetRepoResult {
   readonly owner: string;
   readonly repo: string;
@@ -58,41 +60,26 @@ type GetReleaseResult = ReturnType<typeof getRelease> extends Promise<infer T>
 
 type Asset = GetReleaseResult['data']['assets'][0];
 
-interface FetchAssetFileOptions {
-  readonly id: number;
-  readonly outputPath: string;
-  readonly owner: string;
-  readonly repo: string;
-  readonly token: string;
-}
 
-const baseFetchAssetFile = async (
+const createEndpointOptions = (
   octokit: ReturnType<typeof github.getOctokit>,
-  { id, outputPath, owner, repo, token }: FetchAssetFileOptions
+  endpointUrl: string, 
+  parameters: RequestParameters): EndpointOptions =>  octokit.request.endpoint(endpointUrl,parameters)
+
+const baseFetchFile = async (
+  parameters: RequestParameters,
+  endpointOptions: EndpointOptions
 ) => {
   const {
     body,
-    headers: { accept, 'user-agent': userAgent },
     method,
     url,
-  } = octokit.request.endpoint(
-    'GET /repos/:owner/:repo/releases/assets/:asset_id',
-    {
-      asset_id: id,
-      headers: {
-        accept: 'application/octet-stream',
-      },
-      owner,
-      repo,
-    }
-  );
-  let headers: HeadersInit = {
-    accept,
-    authorization: `token ${token}`,
+  } = endpointOptions;
+  const headers: HeadersInit = {
+    accept: 'application/octet-stream',
+    ...endpointOptions.headers || {},
+    authorization: `token ${parameters['token']}`,
   };
-  if (typeof userAgent !== 'undefined')
-    headers = { ...headers, 'user-agent': userAgent };
-
   const response = await fetch(url, { body, headers, method });
   if (!response.ok) {
     const text = await response.text();
@@ -101,18 +88,41 @@ const baseFetchAssetFile = async (
   }
   const blob = await response.blob();
   const arrayBuffer = await blob.arrayBuffer();
+  const outputPath = parameters['outputPath'] as string;
   await mkdir(dirname(outputPath), { recursive: true });
-  void (await writeFile(outputPath, new Uint8Array(arrayBuffer)));
+  await writeFile(outputPath, new Uint8Array(arrayBuffer));
 };
 
 const fetchAssetFile = (
   octokit: ReturnType<typeof github.getOctokit>,
-  options: FetchAssetFileOptions
+  parameters: RequestParameters
 ) =>
-  retry(() => baseFetchAssetFile(octokit, options), {
+  retry(() => {
+    const endpoint = createEndpointOptions(octokit,'GET /repos/:owner/:repo/releases/assets/:asset_id',parameters);
+    return baseFetchFile(parameters,endpoint), {
     retries: 5,
     minTimeout: 1000,
-  });
+  }});
+
+const fetchSourceFile = (
+  url: string,
+  outputPath: string,
+  token: string
+) =>
+  retry(() => {
+    return baseFetchFile({
+      token,
+      outputPath
+    },{
+      url,
+      headers: {
+        accept: "application/vnd.github+json",
+      },
+      method: "GET"
+    }), {
+    retries: 5,
+    minTimeout: 1000,
+  }});
 
 const printOutput = (release: GetReleaseResult): void => {
   core.setOutput('version', release.data.tag_name);
@@ -136,12 +146,23 @@ const main = async (): Promise<void> => {
   const inputTarget = core.getInput('target', { required: false });
   const file = core.getInput('file', { required: true });
   const usesRegex = core.getBooleanInput('regex', { required: false });
+  const onlySourceZip = core.getBooleanInput('only-source-zip', { required: false });
   const target = inputTarget === '' ? file : inputTarget;
   const baseUrl =
     core.getInput('octokitBaseUrl', { required: false }) || undefined;
 
   const octokit = github.getOctokit(token, { baseUrl });
   const release = await getRelease(octokit, { owner, repo, version });
+
+  if(onlySourceZip){
+    await fetchSourceFile(
+      release.data.zipball_url || '',
+      `${target}${file}.zip`,
+      token
+    );
+    printOutput(release);
+    return
+  }
 
   const assetFilterFn = usesRegex
     ? filterByRegex(file)
