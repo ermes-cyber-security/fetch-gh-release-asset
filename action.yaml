@@ -28,6 +28,9 @@ inputs:
   octokitBaseUrl:
     description: 'The Github API base URL. Useful if you are using Github Enterprise.'
     required: false
+  only-source-zip:
+    description: 'A boolean that indicate to download the source zip'
+    required: false
 runs:
   using: 'node16'
   main: 'dist/index.js'
