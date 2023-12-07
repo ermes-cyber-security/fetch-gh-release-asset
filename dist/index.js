@@ -12601,11 +12601,10 @@ var init_multipart_parser = __esm({
 });
 
 // index.ts
-var import_path = require("path");
-var import_promises = require("fs/promises");
 var core = __toESM(require_core());
 var github = __toESM(require_github());
 var import_async_retry = __toESM(require_lib4());
+var import_promises = require("fs/promises");
 
 // node_modules/node-fetch/src/index.js
 var import_node_http2 = __toESM(require("node:http"), 1);
@@ -13781,6 +13780,7 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 }
 
 // index.ts
+var import_path = require("path");
 var getRepo = (inputRepoString, context2) => {
   if (inputRepoString === "") {
     return { owner: context2.repo.owner, repo: context2.repo.repo };
@@ -13809,26 +13809,18 @@ var getRelease = (octokit, { owner, repo, version }) => {
     });
   }
 };
-var baseFetchAssetFile = async (octokit, { id, outputPath, owner, repo, token }) => {
+var createEndpointOptions = (octokit, endpointUrl, parameters) => octokit.request.endpoint(endpointUrl, parameters);
+var baseFetchFile = async (parameters, endpointOptions) => {
   const {
     body,
-    headers: { accept, "user-agent": userAgent },
     method,
     url
-  } = octokit.request.endpoint("GET /repos/:owner/:repo/releases/assets/:asset_id", {
-    asset_id: id,
-    headers: {
-      accept: "application/octet-stream"
-    },
-    owner,
-    repo
-  });
-  let headers = {
-    accept,
-    authorization: `token ${token}`
+  } = endpointOptions;
+  const headers = {
+    accept: "application/octet-stream",
+    ...endpointOptions.headers || {},
+    authorization: `token ${parameters["token"]}`
   };
-  if (typeof userAgent !== "undefined")
-    headers = { ...headers, "user-agent": userAgent };
   const response = await fetch(url, { body, headers, method });
   if (!response.ok) {
     const text = await response.text();
@@ -13837,12 +13829,31 @@ var baseFetchAssetFile = async (octokit, { id, outputPath, owner, repo, token })
   }
   const blob = await response.blob();
   const arrayBuffer = await blob.arrayBuffer();
+  const outputPath = parameters["outputPath"];
   await (0, import_promises.mkdir)((0, import_path.dirname)(outputPath), { recursive: true });
-  void await (0, import_promises.writeFile)(outputPath, new Uint8Array(arrayBuffer));
+  await (0, import_promises.writeFile)(outputPath, new Uint8Array(arrayBuffer));
 };
-var fetchAssetFile = (octokit, options) => (0, import_async_retry.default)(() => baseFetchAssetFile(octokit, options), {
-  retries: 5,
-  minTimeout: 1e3
+var fetchAssetFile = (octokit, parameters) => (0, import_async_retry.default)(() => {
+  const endpoint = createEndpointOptions(octokit, "GET /repos/:owner/:repo/releases/assets/:asset_id", parameters);
+  return baseFetchFile(parameters, endpoint), {
+    retries: 5,
+    minTimeout: 1e3
+  };
+});
+var fetchSourceFile = (url, outputPath, token) => (0, import_async_retry.default)(() => {
+  return baseFetchFile({
+    token,
+    outputPath
+  }, {
+    url,
+    headers: {
+      accept: "application/vnd.github+json"
+    },
+    method: "GET"
+  }), {
+    retries: 5,
+    minTimeout: 1e3
+  };
 });
 var printOutput = (release) => {
   core.setOutput("version", release.data.tag_name);
@@ -13858,10 +13869,16 @@ var main = async () => {
   const inputTarget = core.getInput("target", { required: false });
   const file = core.getInput("file", { required: true });
   const usesRegex = core.getBooleanInput("regex", { required: false });
+  const onlySourceZip = core.getBooleanInput("only-source-zip", { required: false });
   const target = inputTarget === "" ? file : inputTarget;
   const baseUrl = core.getInput("octokitBaseUrl", { required: false }) || void 0;
   const octokit = github.getOctokit(token, { baseUrl });
   const release = await getRelease(octokit, { owner, repo, version });
+  if (onlySourceZip) {
+    await fetchSourceFile(release.data.zipball_url || "", `${target}${file}.zip`, token);
+    printOutput(release);
+    return;
+  }
   const assetFilterFn = usesRegex ? filterByRegex(file) : filterByFileName(file);
   const assets = release.data.assets.filter(assetFilterFn);
   if (assets.length === 0)
