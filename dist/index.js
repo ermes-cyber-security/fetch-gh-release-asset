@@ -13811,14 +13811,17 @@ var getRelease = (octokit, { owner, repo, version }) => {
 };
 var createEndpointOptions = (octokit, endpointUrl, parameters) => octokit.request.endpoint(endpointUrl, parameters);
 var baseFetchFile = async (parameters, endpointOptions) => {
-  const { body, method, url } = endpointOptions;
+  const { body, url, method, headers } = endpointOptions;
   const { token, outputPath } = parameters;
-  const headers = {
-    accept: "application/octet-stream",
-    ...endpointOptions.headers || {},
+  const fetchHeaders = {
+    ...headers || {},
     authorization: `token ${token}`
   };
-  const response = await fetch(url, { body, headers, method });
+  const response = await fetch(url, {
+    body,
+    headers: fetchHeaders,
+    method
+  });
   if (!response.ok) {
     const text = await response.text();
     core.warning(text);
@@ -13830,7 +13833,14 @@ var baseFetchFile = async (parameters, endpointOptions) => {
   await (0, import_promises.writeFile)(outputPath, new Uint8Array(arrayBuffer));
 };
 var fetchAssetFile = (octokit, parameters) => (0, import_async_retry.default)(() => {
-  const endpoint = createEndpointOptions(octokit, "GET /repos/:owner/:repo/releases/assets/:asset_id", parameters);
+  const { owner, repo, id } = parameters;
+  const endpoint = createEndpointOptions(octokit, "GET /repos/:owner/:repo/releases/assets/:asset_id", {
+    owner,
+    repo,
+    asset_id: id
+  });
+  endpoint.headers = endpoint.headers || {};
+  endpoint.headers.accept = "application/octet-stream";
   return baseFetchFile(parameters, endpoint), {
     retries: 5,
     minTimeout: 1e3
@@ -13841,10 +13851,10 @@ var fetchSourceFile = (url, outputPath, token) => (0, import_async_retry.default
   outputPath
 }, {
   url,
+  method: "GET",
   headers: {
-    accept: "application/vnd.github+json"
-  },
-  method: "GET"
+    accept: "application/vnd.github.v3+json"
+  }
 }), {
   retries: 5,
   minTimeout: 1e3
@@ -13881,7 +13891,7 @@ var main = async () => {
     throw new Error("Could not find asset id");
   for (const asset of assets) {
     await fetchAssetFile(octokit, {
-      asset_id: asset.id,
+      id: asset.id,
       outputPath: usesRegex ? `${target}${asset.name}` : target,
       owner,
       repo,
