@@ -4,8 +4,7 @@ import type { Context } from '@actions/github/lib/context';
 import { EndpointOptions, RequestParameters } from '@octokit/types';
 import retry from 'async-retry';
 import { mkdir, writeFile } from 'fs/promises';
-import type { HeadersInit } from 'node-fetch';
-import fetch from 'node-fetch';
+import fetch, { HeadersInit } from 'node-fetch';
 import { dirname } from 'path';
 interface GetRepoResult {
   readonly owner: string;
@@ -67,17 +66,20 @@ const baseFetchFile = async (
   parameters: RequestParameters,
   endpointOptions: EndpointOptions
 ) => {
-  const { body, method, url } = endpointOptions;
+  const { body, url, method, headers } = endpointOptions;
   const { token, outputPath } = parameters as {
     token: string;
     outputPath: string;
   };
-  const headers: HeadersInit = {
-    accept: 'application/octet-stream',
-    ...(endpointOptions.headers || {}),
+  const fetchHeaders: HeadersInit = {
+    ...(headers || {}),
     authorization: `token ${token}`
   };
-  const response = await fetch(url, { body, headers, method });
+  const response = await fetch(url, {
+    body,
+    headers: fetchHeaders,
+    method
+  });
   if (!response.ok) {
     const text = await response.text();
     core.warning(text);
@@ -94,11 +96,18 @@ const fetchAssetFile = (
   parameters: RequestParameters
 ) =>
   retry(() => {
+    const { owner, repo, id } = parameters;
     const endpoint = createEndpointOptions(
       octokit,
       'GET /repos/:owner/:repo/releases/assets/:asset_id',
-      parameters
+      {
+        owner,
+        repo,
+        asset_id: id
+      }
     );
+    endpoint.headers = endpoint.headers || {};
+    endpoint.headers.accept = 'application/octet-stream';
     return (
       baseFetchFile(parameters, endpoint),
       {
@@ -118,10 +127,10 @@ const fetchSourceFile = (url: string, outputPath: string, token: string) =>
         },
         {
           url,
+          method: 'GET',
           headers: {
-            accept: 'application/vnd.github+json'
-          },
-          method: 'GET'
+            accept: 'application/vnd.github.v3+json'
+          }
         }
       ),
       {
@@ -181,7 +190,7 @@ const main = async (): Promise<void> => {
   if (assets.length === 0) throw new Error('Could not find asset id');
   for (const asset of assets) {
     await fetchAssetFile(octokit, {
-      asset_id: asset.id,
+      id: asset.id,
       outputPath: usesRegex ? `${target}${asset.name}` : target,
       owner,
       repo,
